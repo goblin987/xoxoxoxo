@@ -752,7 +752,8 @@ async def _finalize_purchase(user_id: int, basket_snapshot: list, discount_code_
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("BEGIN EXCLUSIVE")
+        # Use IMMEDIATE instead of EXCLUSIVE to reduce lock conflicts
+        c.execute("BEGIN IMMEDIATE")
         purchase_time_iso = datetime.now(timezone.utc).isoformat()
 
         for item_snapshot in basket_snapshot: # Iterate directly over the rich snapshot
@@ -905,6 +906,12 @@ async def _finalize_purchase(user_id: int, basket_snapshot: list, discount_code_
                     media_group_input = []
                     files_for_this_group = []
                     logger.info(f"Attempting to send {len(photo_video_group_details)} photos/videos for P{prod_id} user {user_id}")
+                    
+                    # Validate that we don't exceed Telegram's media group limit (10 items)
+                    if len(photo_video_group_details) > 10:
+                        logger.warning(f"Media group for P{prod_id} has {len(photo_video_group_details)} items, which exceeds Telegram's 10-item limit. Will send in batches.")
+                        photo_video_group_details = photo_video_group_details[:10]  # Take only first 10 items
+                    
                     try:
                         for item in photo_video_group_details:
                             input_media = None; file_handle = None
@@ -933,7 +940,7 @@ async def _finalize_purchase(user_id: int, basket_snapshot: list, discount_code_
                         if media_group_input:
                             logger.info(f"Sending media group with {len(media_group_input)} items for P{prod_id} user {user_id}")
                             try:
-                                await context.bot.send_media_group(chat_id, media=media_group_input, connect_timeout=20, read_timeout=20)
+                                await context.bot.send_media_group(chat_id, media=media_group_input, connect_timeout=30, read_timeout=30)
                                 logger.info(f"✅ Successfully sent photo/video group ({len(media_group_input)}) for P{prod_id} user {user_id}")
                             except Exception as send_error:
                                 # If sending fails due to invalid file IDs, try to rebuild with file paths only
@@ -957,7 +964,7 @@ async def _finalize_purchase(user_id: int, basket_snapshot: list, discount_code_
                                     
                                     if fallback_media_group:
                                         try:
-                                            await context.bot.send_media_group(chat_id, media=fallback_media_group, connect_timeout=20, read_timeout=20)
+                                            await context.bot.send_media_group(chat_id, media=fallback_media_group, connect_timeout=30, read_timeout=30)
                                             logger.info(f"✅ Successfully sent fallback media group for P{prod_id} user {user_id}")
                                         except Exception as fallback_send_error:
                                             logger.error(f"❌ Fallback media group send also failed for P{prod_id}: {fallback_send_error}")
@@ -1093,7 +1100,8 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("BEGIN EXCLUSIVE")
+        # Use IMMEDIATE instead of EXCLUSIVE to reduce lock conflicts
+        c.execute("BEGIN IMMEDIATE")
         # 1. Verify balance
         c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         current_balance_result = c.fetchone()

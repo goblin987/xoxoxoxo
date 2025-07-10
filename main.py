@@ -536,6 +536,55 @@ async def send_timeout_notifications(context: ContextTypes.DEFAULT_TYPE, user_no
             logger.error(f"Failed to send timeout notification to user {user_id}: {e}")
 
 
+async def retry_purchase_finalization(user_id: int, basket_snapshot: list, discount_code_used: str | None, payment_id: str, context: ContextTypes.DEFAULT_TYPE, max_retries: int = 3):
+    """Retry purchase finalization with exponential backoff in case of failures."""
+    import payment
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Retrying purchase finalization for payment {payment_id}, attempt {attempt + 1}/{max_retries}")
+            
+            # Wait with exponential backoff: 5s, 15s, 45s
+            if attempt > 0:
+                wait_time = 5 * (3 ** attempt)
+                logger.info(f"Waiting {wait_time} seconds before retry attempt {attempt + 1}")
+                await asyncio.sleep(wait_time)
+            
+            # Retry the finalization
+            purchase_finalized = await payment.process_successful_crypto_purchase(
+                user_id, basket_snapshot, discount_code_used, payment_id, context
+            )
+            
+            if purchase_finalized:
+                logger.info(f"✅ SUCCESS: Purchase finalization retry succeeded for payment {payment_id} on attempt {attempt + 1}")
+                # Remove the pending deposit on success
+                await asyncio.to_thread(remove_pending_deposit, payment_id, trigger="retry_success")
+                return True
+            else:
+                logger.warning(f"Purchase finalization retry failed for payment {payment_id} on attempt {attempt + 1}")
+                
+        except Exception as e:
+            logger.error(f"Exception during purchase finalization retry for payment {payment_id}, attempt {attempt + 1}: {e}", exc_info=True)
+    
+    # All retries failed
+    logger.critical(f"🚨 CRITICAL: All {max_retries} retry attempts failed for purchase finalization payment {payment_id} user {user_id}")
+    
+    # Send critical alert to admin
+    if ADMIN_ID and telegram_app:
+        try:
+            await send_message_with_retry(
+                telegram_app.bot, 
+                ADMIN_ID, 
+                f"🚨 CRITICAL FAILURE: Purchase {payment_id} for user {user_id} FAILED after {max_retries} retries. "
+                f"Payment was successful but finalization completely failed. URGENT MANUAL INTERVENTION REQUIRED!",
+                parse_mode=None
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to notify admin about critical purchase failure: {notify_error}")
+    
+    return False
+
+
 # --- Flask Webhook Routes ---
 def verify_nowpayments_signature(request_data_bytes, signature_header, secret_key):
     if not secret_key or not signature_header:
@@ -671,8 +720,24 @@ def nowpayments_webhook():
                         main_loop
                     )
                     purchase_finalized = False
-                    try: purchase_finalized = finalize_future.result(timeout=60)
-                    except Exception as e: logger.error(f"Error getting result from process_successful_crypto_purchase for {payment_id}: {e}. Purchase may not be fully finalized.", exc_info=True)
+                    try: 
+                        purchase_finalized = finalize_future.result(timeout=120)  # Increased timeout from 60 to 120 seconds
+                    except asyncio.TimeoutError:
+                        logger.error(f"TIMEOUT: Purchase finalization for {payment_id} user {user_id} exceeded 120 seconds. Will retry in background.")
+                        # Schedule a retry in the background without blocking the webhook
+                        asyncio.run_coroutine_threadsafe(
+                            retry_purchase_finalization(user_id, basket_snapshot, discount_code_used, payment_id, dummy_context),
+                            main_loop
+                        )
+                        return Response("Purchase finalization in progress", status=200)
+                    except Exception as e: 
+                        logger.error(f"Error getting result from process_successful_crypto_purchase for {payment_id}: {e}. Purchase may not be fully finalized.", exc_info=True)
+                        # Schedule a retry in the background
+                        asyncio.run_coroutine_threadsafe(
+                            retry_purchase_finalization(user_id, basket_snapshot, discount_code_used, payment_id, dummy_context),
+                            main_loop
+                        )
+                        return Response("Purchase finalization error, retrying", status=200)
 
                     if purchase_finalized:
                         overpaid_eur = (paid_eur_equivalent - target_eur_decimal).quantize(Decimal("0.01"), rounding=ROUND_DOWN)

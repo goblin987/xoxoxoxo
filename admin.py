@@ -138,7 +138,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # --- Constants for Media Group Handling ---
-MEDIA_GROUP_COLLECTION_DELAY = 2.0 # Seconds to wait for more media in a group
+MEDIA_GROUP_COLLECTION_DELAY = 3.5 # Increased from 2.0 to 3.5 seconds to ensure all media is collected
 TEMPLATES_PER_PAGE = 5 # Pagination for welcome templates
 
 # --- Helper Function to Remove Existing Job ---
@@ -397,17 +397,26 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
 
         remove_job_if_exists(job_name, context)
         if hasattr(context, 'job_queue') and context.job_queue:
-            context.job_queue.run_once(
-                _process_collected_media,
-                when=timedelta(seconds=MEDIA_GROUP_COLLECTION_DELAY),
-                data={'media_group_id': media_group_id, 'chat_id': chat_id, 'user_id': user_id},
-                name=job_name,
-                job_kwargs={'misfire_grace_time': 15}
-            )
-            logger.debug(f"Scheduled/Rescheduled job {job_name} for media group {media_group_id}")
+            try:
+                context.job_queue.run_once(
+                    _process_collected_media,
+                    when=timedelta(seconds=MEDIA_GROUP_COLLECTION_DELAY),
+                    data={'media_group_id': media_group_id, 'chat_id': chat_id, 'user_id': user_id},
+                    name=job_name,
+                    job_kwargs={'misfire_grace_time': 30}  # Increased grace time from 15 to 30 seconds
+                )
+                logger.debug(f"Scheduled/Rescheduled job {job_name} for media group {media_group_id}")
+            except Exception as job_error:
+                logger.error(f"Failed to schedule media group job {job_name}: {job_error}")
+                # Fallback: Process immediately if job scheduling fails
+                await _prepare_and_confirm_drop(context, user_specific_data, chat_id, user_id, text, user_specific_data['collected_media'][media_group_id]['media'])
         else:
             logger.error("JobQueue not found in context. Cannot schedule media group processing.")
-            await send_message_with_retry(context.bot, chat_id, "❌ Error: Internal components missing. Cannot process media group.", parse_mode=None)
+            # Fallback: Process immediately if no job queue
+            if media_group_id in user_specific_data.get('collected_media', {}):
+                await _prepare_and_confirm_drop(context, user_specific_data, chat_id, user_id, text, user_specific_data['collected_media'][media_group_id]['media'])
+            else:
+                await send_message_with_retry(context.bot, chat_id, "❌ Error: Internal components missing. Cannot process media group.", parse_mode=None)
 
     else:
         if user_specific_data.get('collecting_media_group_id'):
@@ -1154,17 +1163,48 @@ async def handle_adm_bulk_drop_details_message(update: Update, context: ContextT
 
         remove_job_if_exists(job_name, context)
         if hasattr(context, 'job_queue') and context.job_queue:
-            context.job_queue.run_once(
-                _process_bulk_collected_media,
-                when=timedelta(seconds=MEDIA_GROUP_COLLECTION_DELAY),
-                data={'media_group_id': media_group_id, 'chat_id': chat_id, 'user_id': user_id},
-                name=job_name,
-                job_kwargs={'misfire_grace_time': 15}
-            )
-            logger.info(f"BULK DEBUG: Scheduled bulk job {job_name} for media group {media_group_id} to run in {MEDIA_GROUP_COLLECTION_DELAY} seconds")
+            try:
+                context.job_queue.run_once(
+                    _process_bulk_collected_media,
+                    when=timedelta(seconds=MEDIA_GROUP_COLLECTION_DELAY),
+                    data={'media_group_id': media_group_id, 'chat_id': chat_id, 'user_id': user_id},
+                    name=job_name,
+                    job_kwargs={'misfire_grace_time': 30}  # Increased grace time from 15 to 30 seconds
+                )
+                logger.info(f"BULK DEBUG: Scheduled bulk job {job_name} for media group {media_group_id} to run in {MEDIA_GROUP_COLLECTION_DELAY} seconds")
+            except Exception as job_error:
+                logger.error(f"BULK DEBUG: Failed to schedule bulk media group job {job_name}: {job_error}")
+                # Fallback: Process immediately if job scheduling fails
+                collected_media = context.user_data['bulk_collected_media'][media_group_id]['media']
+                message_data = {
+                    "text": text,
+                    "media": collected_media,
+                    "timestamp": int(time.time())
+                }
+                bulk_messages = context.user_data.get("bulk_messages", [])
+                bulk_messages.append(message_data)
+                context.user_data["bulk_messages"] = bulk_messages
+                await send_message_with_retry(context.bot, chat_id, 
+                    f"✅ Media group added to bulk collection! Total messages: {len(bulk_messages)}/10", 
+                    parse_mode=None)
         else:
             logger.error("JobQueue not found in context. Cannot schedule bulk media group processing.")
-            await send_message_with_retry(context.bot, chat_id, "❌ Error: Internal components missing. Cannot process media group.", parse_mode=None)
+            # Fallback: Process immediately if no job queue
+            if media_group_id in context.user_data.get('bulk_collected_media', {}):
+                collected_media = context.user_data['bulk_collected_media'][media_group_id]['media']
+                message_data = {
+                    "text": text,
+                    "media": collected_media,
+                    "timestamp": int(time.time())
+                }
+                bulk_messages = context.user_data.get("bulk_messages", [])
+                bulk_messages.append(message_data)
+                context.user_data["bulk_messages"] = bulk_messages
+                await send_message_with_retry(context.bot, chat_id, 
+                    f"✅ Media group added to bulk collection! Total messages: {len(bulk_messages)}/10", 
+                    parse_mode=None)
+            else:
+                await send_message_with_retry(context.bot, chat_id, "❌ Error: Internal components missing. Cannot process media group.", parse_mode=None)
 
     else:
         if context.user_data.get('bulk_collecting_media_group_id'):
