@@ -42,7 +42,8 @@ from utils import (
     clean_expired_pending_payments,
     get_expired_payments_for_notification,
     clean_abandoned_reservations,
-    get_crypto_price_eur
+    get_crypto_price_eur,
+    get_first_primary_admin_id # Admin helper for notifications
 )
 import user # Import user module
 from user import (
@@ -570,7 +571,7 @@ async def retry_purchase_finalization(user_id: int, basket_snapshot: list, disco
     logger.critical(f"🚨 CRITICAL: All {max_retries} retry attempts failed for purchase finalization payment {payment_id} user {user_id}")
     
     # Send critical alert to admin
-    if ADMIN_ID and telegram_app:
+    if get_first_primary_admin_id() and telegram_app:
         try:
             await send_message_with_retry(
                 telegram_app.bot, 
@@ -750,12 +751,12 @@ def nowpayments_webhook():
                             try: credit_future.result(timeout=30)
                             except Exception as e:
                                 logger.error(f"Error crediting overpayment for {payment_id}: {e}", exc_info=True)
-                                if ADMIN_ID: asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, ADMIN_ID, f"⚠️ CRITICAL: Failed to credit overpayment for purchase {payment_id} user {user_id}. Amount: {overpaid_eur:.2f} EUR. MANUAL CHECK NEEDED!"), main_loop)
+                                if get_first_primary_admin_id(): asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, get_first_primary_admin_id(), f"⚠️ CRITICAL: Failed to credit overpayment for purchase {payment_id} user {user_id}. Amount: {overpaid_eur:.2f} EUR. MANUAL CHECK NEEDED!"), main_loop)
                         asyncio.run_coroutine_threadsafe(asyncio.to_thread(remove_pending_deposit, payment_id, trigger="purchase_success"), main_loop)
                         logger.info(f"Successfully processed and removed pending record for {log_prefix} {payment_id}")
                     else:
                         logger.critical(f"CRITICAL: {log_prefix} {payment_id} paid (>= expected), but process_successful_crypto_purchase FAILED for user {user_id}. Pending deposit NOT removed. Manual intervention required.")
-                        if ADMIN_ID: asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, ADMIN_ID, f"⚠️ CRITICAL: Crypto purchase {payment_id} paid by user {user_id} but FAILED TO FINALIZE. Check logs!"), main_loop)
+                        if get_first_primary_admin_id(): asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, get_first_primary_admin_id(), f"⚠️ CRITICAL: Crypto purchase {payment_id} paid by user {user_id} but FAILED TO FINALIZE. Check logs!"), main_loop)
                 else: # Underpayment
                     logger.warning(f"{log_prefix} {payment_id} UNDERPAID by user {user_id}. Crediting balance with received amount.")
                     credit_future = asyncio.run_coroutine_threadsafe(
@@ -767,7 +768,7 @@ def nowpayments_webhook():
                     except Exception as e: logger.error(f"Error crediting underpayment for {payment_id}: {e}", exc_info=True)
                     if not credit_success:
                          logger.critical(f"CRITICAL: Failed to credit balance for underpayment {payment_id} user {user_id}. Amount: {paid_eur_equivalent:.2f} EUR. MANUAL CHECK NEEDED!")
-                         if ADMIN_ID: asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, ADMIN_ID, f"⚠️ CRITICAL: Failed to credit balance for UNDERPAYMENT {payment_id} user {user_id}. Amount: {paid_eur_equivalent:.2f} EUR. MANUAL CHECK NEEDED!"), main_loop)
+                         if get_first_primary_admin_id(): asyncio.run_coroutine_threadsafe(send_message_with_retry(telegram_app.bot, get_first_primary_admin_id(), f"⚠️ CRITICAL: Failed to credit balance for UNDERPAYMENT {payment_id} user {user_id}. Amount: {paid_eur_equivalent:.2f} EUR. MANUAL CHECK NEEDED!"), main_loop)
                     lang_data_local = LANGUAGES.get(dummy_context.user_data.get("lang", "en"), LANGUAGES['en'])
                     fail_msg_template = lang_data_local.get("crypto_purchase_underpaid_credited", "⚠️ Purchase Failed: Underpayment detected. Amount needed was {needed_eur} EUR. Your balance has been credited with the received value ({paid_eur} EUR). Your items were not delivered.")
                     fail_msg = fail_msg_template.format(needed_eur=format_currency(target_eur_decimal), paid_eur=format_currency(paid_eur_equivalent))

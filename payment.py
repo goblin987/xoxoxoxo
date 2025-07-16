@@ -33,7 +33,8 @@ from utils import ( # Ensure utils imports are correct
     get_db_connection, MEDIA_DIR, PRODUCT_TYPES, DEFAULT_PRODUCT_EMOJI, # Added PRODUCT_TYPES/Emoji
     clear_expired_basket, # Added import
     _get_lang_data, # <--- *** ADDED IMPORT HERE ***
-    log_admin_action # <<< IMPORT log_admin_action >>>
+    log_admin_action, # <<< IMPORT log_admin_action >>>
+    get_first_primary_admin_id # Admin helper function for notifications
 )
 # <<< IMPORT USER MODULE >>>
 import user
@@ -1148,8 +1149,8 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                 if chat_id: await send_message_with_retry(context.bot, chat_id, error_processing_purchase_contact_support + " Balance refunded.", parse_mode=None)
             except Exception as refund_e:
                 logger.critical(f"CRITICAL REFUND FAILED for user {user_id}: {refund_e}. Manual balance correction required.")
-                if ADMIN_ID and chat_id: # Notify admin if refund fails
-                    await send_message_with_retry(context.bot, ADMIN_ID, f"⚠️ CRITICAL REFUND FAILED for user {user_id} after purchase finalization error. Amount: {amount_to_deduct}. MANUAL CORRECTION NEEDED!", parse_mode=None)
+                if get_first_primary_admin_id() and chat_id: # Notify admin if refund fails
+                    await send_message_with_retry(context.bot, get_first_primary_admin_id(), f"⚠️ CRITICAL REFUND FAILED for user {user_id} after purchase finalization error. Amount: {amount_to_deduct}. MANUAL CORRECTION NEEDED!", parse_mode=None)
                 if chat_id: await send_message_with_retry(context.bot, chat_id, error_processing_purchase_contact_support, parse_mode=None)
             finally:
                 if refund_conn: refund_conn.close()
@@ -1175,9 +1176,9 @@ async def process_successful_crypto_purchase(user_id: int, basket_snapshot: list
 
     if not basket_snapshot:
         logger.error(f"CRITICAL: Successful crypto payment {payment_id} for user {user_id} received, but basket snapshot was empty/missing in pending record.")
-        if ADMIN_ID and chat_id:
+        if get_first_primary_admin_id() and chat_id:
             try:
-                await send_message_with_retry(context.bot, ADMIN_ID, f"⚠️ Critical Issue: Crypto payment {payment_id} success for user {user_id}, but basket data missing! Manual check needed.", parse_mode=None)
+                await send_message_with_retry(context.bot, get_first_primary_admin_id(), f"⚠️ Critical Issue: Crypto payment {payment_id} success for user {user_id}, but basket data missing! Manual check needed.", parse_mode=None)
             except Exception as admin_notify_e:
                 logger.error(f"Failed to notify admin about critical missing basket data: {admin_notify_e}")
         return False # Cannot proceed
@@ -1191,9 +1192,9 @@ async def process_successful_crypto_purchase(user_id: int, basket_snapshot: list
     else:
         # Finalization failed even after payment confirmed. This is bad.
         logger.error(f"CRITICAL: Crypto payment {payment_id} success for user {user_id}, but _finalize_purchase failed! Items paid for but not processed in DB correctly.")
-        if ADMIN_ID and chat_id:
+        if get_first_primary_admin_id() and chat_id:
             try:
-                await send_message_with_retry(context.bot, ADMIN_ID, f"⚠️ Critical Issue: Crypto payment {payment_id} success for user {user_id}, but finalization FAILED! Check logs! MANUAL INTERVENTION REQUIRED.", parse_mode=None)
+                await send_message_with_retry(context.bot, get_first_primary_admin_id(), f"⚠️ Critical Issue: Crypto payment {payment_id} success for user {user_id}, but finalization FAILED! Check logs! MANUAL INTERVENTION REQUIRED.", parse_mode=None)
             except Exception as admin_notify_e:
                  logger.error(f"Failed to notify admin about critical finalization failure: {admin_notify_e}")
         if chat_id:

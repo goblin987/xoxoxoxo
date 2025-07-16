@@ -47,14 +47,26 @@ NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "") # NOWPayments AP
 NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") # Base URL for Render app (e.g., https://app-name.onrender.com)
 ADMIN_ID_RAW = os.environ.get("ADMIN_ID", None)
+PRIMARY_ADMIN_IDS_STR = os.environ.get("PRIMARY_ADMIN_IDS", "")
 SECONDARY_ADMIN_IDS_STR = os.environ.get("SECONDARY_ADMIN_IDS", "")
 SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "support")
 BASKET_TIMEOUT_MINUTES_STR = os.environ.get("BASKET_TIMEOUT_MINUTES", "15")
 
+# Legacy support for single ADMIN_ID
 ADMIN_ID = None
 if ADMIN_ID_RAW is not None:
     try: ADMIN_ID = int(ADMIN_ID_RAW)
     except (ValueError, TypeError): logger.error(f"Invalid format for ADMIN_ID: {ADMIN_ID_RAW}. Must be an integer.")
+
+# New multi-primary admin support
+PRIMARY_ADMIN_IDS = []
+if PRIMARY_ADMIN_IDS_STR:
+    try: PRIMARY_ADMIN_IDS = [int(uid.strip()) for uid in PRIMARY_ADMIN_IDS_STR.split(',') if uid.strip()]
+    except ValueError: logger.warning("PRIMARY_ADMIN_IDS contains non-integer values. Ignoring.")
+
+# Add legacy ADMIN_ID to PRIMARY_ADMIN_IDS if it exists and isn't already included
+if ADMIN_ID is not None and ADMIN_ID not in PRIMARY_ADMIN_IDS:
+    PRIMARY_ADMIN_IDS.append(ADMIN_ID)
 
 SECONDARY_ADMIN_IDS = []
 if SECONDARY_ADMIN_IDS_STR:
@@ -87,7 +99,8 @@ logger.info(f"TOKEN validation passed. Bot ID: {token_parts[0]}")
 if not NOWPAYMENTS_API_KEY: logger.critical("CRITICAL ERROR: NOWPAYMENTS_API_KEY environment variable is missing."); raise SystemExit("NOWPAYMENTS_API_KEY not set.")
 if not NOWPAYMENTS_IPN_SECRET: logger.info("NOWPayments webhook signature verification is disabled by configuration.")
 if not WEBHOOK_URL: logger.critical("CRITICAL ERROR: WEBHOOK_URL environment variable is missing."); raise SystemExit("WEBHOOK_URL not set.")
-if ADMIN_ID is None: logger.warning("ADMIN_ID not set or invalid. Primary admin features disabled.")
+if not PRIMARY_ADMIN_IDS: logger.warning("No primary admin IDs configured. Primary admin features disabled.")
+logger.info(f"Loaded {len(PRIMARY_ADMIN_IDS)} primary admin ID(s): {PRIMARY_ADMIN_IDS}")
 logger.info(f"Loaded {len(SECONDARY_ADMIN_IDS)} secondary admin ID(s): {SECONDARY_ADMIN_IDS}")
 logger.info(f"Basket timeout set to {BASKET_TIMEOUT // 60} minutes.")
 logger.info(f"NOWPayments IPN expected at: {WEBHOOK_URL}/webhook")
@@ -2001,6 +2014,23 @@ def log_admin_action(admin_id: int, action: str, target_user_id: int | None = No
         logger.error(f"Failed to log admin action: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error logging admin action: {e}", exc_info=True)
+
+# --- Admin Authorization Helpers ---
+def is_primary_admin(user_id: int) -> bool:
+    """Check if a user ID is a primary admin."""
+    return user_id in PRIMARY_ADMIN_IDS
+
+def is_secondary_admin(user_id: int) -> bool:
+    """Check if a user ID is a secondary admin."""
+    return user_id in SECONDARY_ADMIN_IDS
+
+def is_any_admin(user_id: int) -> bool:
+    """Check if a user ID is either a primary or secondary admin."""
+    return is_primary_admin(user_id) or is_secondary_admin(user_id)
+
+def get_first_primary_admin_id() -> int | None:
+    """Get the first primary admin ID for legacy compatibility, or None if none configured."""
+    return PRIMARY_ADMIN_IDS[0] if PRIMARY_ADMIN_IDS else None
 
 # --- Welcome Message Helpers (Synchronous) ---
 def load_active_welcome_message() -> str:

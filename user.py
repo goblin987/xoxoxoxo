@@ -26,7 +26,8 @@ from utils import (
     load_active_welcome_message, # <<< Import welcome message loader (though we'll modify its usage)
     DEFAULT_WELCOME_MESSAGE, # <<< Import default welcome message fallback
     _get_lang_data, # <<< IMPORT THE HELPER FROM UTILS >>>
-    _unreserve_basket_items # <<< IMPORT UNRESERVE HELPER >>>
+    _unreserve_basket_items, # <<< IMPORT UNRESERVE HELPER >>>
+    is_primary_admin, is_secondary_admin, is_any_admin # Admin helper functions
 )
 import json # <<< Make sure json is imported
 import payment # <<< Make sure payment module is imported
@@ -194,7 +195,7 @@ def _build_start_menu_content(user_id: int, username: str, lang_data: dict, cont
          InlineKeyboardButton(f"{EMOJI_PRICELIST} {price_list_button_text}", callback_data="price_list"),
          InlineKeyboardButton(f"{EMOJI_LANG} {language_button_text}", callback_data="language")]
     ]
-    if user_id == ADMIN_ID:
+    if is_primary_admin(user_id):
         keyboard.insert(0, [InlineKeyboardButton(admin_button_text, callback_data="admin_menu")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)

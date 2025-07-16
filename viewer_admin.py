@@ -23,12 +23,14 @@ import telegram.error as telegram_error
 
 # Import shared elements from utils
 from utils import (
-    ADMIN_ID, LANGUAGES, format_currency, send_message_with_retry,
+    ADMIN_ID, PRIMARY_ADMIN_IDS, LANGUAGES, format_currency, send_message_with_retry,
     SECONDARY_ADMIN_IDS, fetch_reviews,
     get_db_connection, MEDIA_DIR, # Import helper and MEDIA_DIR
     get_user_status, get_progress_bar, # Import user status helpers
     log_admin_action, # <-- IMPORT admin log function
-    PRODUCT_TYPES, DEFAULT_PRODUCT_EMOJI # <<< IMPORT THESE FOR HISTORY
+    PRODUCT_TYPES, DEFAULT_PRODUCT_EMOJI, # <<< IMPORT THESE FOR HISTORY
+    # Admin authorization helpers
+    is_primary_admin, is_secondary_admin, is_any_admin
 )
 # Import the shared stock handler from stock.py
 try:
@@ -68,10 +70,10 @@ async def handle_viewer_admin_menu(update: Update, context: ContextTypes.DEFAULT
     chat_id = update.effective_chat.id
 
     # --- Authorization Check ---
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
+    primary_admin = (is_primary_admin(user_id))
+    secondary_admin = is_secondary_admin(user_id)
 
-    if not is_primary_admin and not is_secondary_admin:
+    if not primary_admin and not secondary_admin:
         logger.warning(f"Non-admin user {user_id} attempted to access viewer admin menu.")
         if query: await query.answer("Access denied.", show_alert=True)
         else: await send_message_with_retry(context.bot, chat_id, "Access denied.", parse_mode=None)
@@ -134,9 +136,9 @@ async def handle_viewer_added_products(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     user_id = query.from_user.id
 
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
-    if not is_primary_admin and not is_secondary_admin:
+    primary_admin = (is_primary_admin(user_id))
+    secondary_admin = is_secondary_admin(user_id)
+    if not primary_admin and not secondary_admin:
         return await query.answer("Access Denied.", show_alert=True)
 
     offset = 0
@@ -218,7 +220,7 @@ async def handle_viewer_added_products(update: Update, context: ContextTypes.DEF
         msg_parts.append(f"\nPage {current_page}/{total_pages}")
 
     # Determine correct back button based on admin type
-    back_callback = "admin_menu" if is_primary_admin else "viewer_admin_menu"
+    back_callback = "admin_menu" if primary_admin else "viewer_admin_menu"
     keyboard.append([InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data=back_callback)])
 
     final_msg = "".join(msg_parts)
@@ -240,9 +242,9 @@ async def handle_viewer_view_product_media(update: Update, context: ContextTypes
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
-    if not is_primary_admin and not is_secondary_admin:
+    primary_admin = (is_primary_admin(user_id))
+    secondary_admin = is_secondary_admin(user_id)
+    if not primary_admin and not secondary_admin:
         return await query.answer("Access Denied.", show_alert=True)
 
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
@@ -414,7 +416,7 @@ async def handle_viewer_view_product_media(update: Update, context: ContextTypes
 async def handle_manage_users_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays the first page of users for management (Primary Admin only)."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     offset = 0
     if params and len(params) > 0 and params[0].isdigit(): offset = int(params[0])
     await _display_user_list(update, context, offset)
@@ -437,13 +439,14 @@ async def _display_user_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
         c.execute("SELECT COUNT(*) as count FROM users")
         count_res = c.fetchone(); total_users = count_res['count'] if count_res else 0
 
-        # Fetch users, excluding the primary admin themselves
-        c.execute("""
+        # Fetch users, excluding all primary admins
+        primary_admin_ids_str = ','.join(['?' for _ in PRIMARY_ADMIN_IDS]) if PRIMARY_ADMIN_IDS else '0'
+        c.execute(f"""
             SELECT user_id, username, balance, total_purchases, is_banned
             FROM users
-            WHERE user_id != ?
+            WHERE user_id NOT IN ({primary_admin_ids_str})
             ORDER BY user_id DESC LIMIT ? OFFSET ?
-        """, (ADMIN_ID, USERS_PER_PAGE, offset))
+        """, PRIMARY_ADMIN_IDS + [USERS_PER_PAGE, offset])
         users = c.fetchall()
 
     except sqlite3.Error as e:
@@ -501,7 +504,7 @@ async def handle_view_user_profile(update: Update, context: ContextTypes.DEFAULT
     """Displays a specific user's profile with management options for admin."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
         await query.answer("Error: Missing user ID or offset.", show_alert=True); return
 
@@ -603,7 +606,7 @@ async def handle_adjust_balance_start(update: Update, context: ContextTypes.DEFA
     """Starts the balance adjustment process."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
         await query.answer("Error: Missing user ID or offset.", show_alert=True); return
 
@@ -641,7 +644,7 @@ async def handle_adjust_balance_amount_message(update: Update, context: ContextT
     """Handles the admin entering the balance adjustment amount."""
     admin_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if admin_id != ADMIN_ID: return
+    if not is_primary_admin(admin_id): return
     if context.user_data.get("state") != 'awaiting_balance_adjustment_amount': return
     if not update.message or not update.message.text: return
 
@@ -683,7 +686,7 @@ async def handle_adjust_balance_reason_message(update: Update, context: ContextT
     """Handles the admin entering the reason and performs the balance adjustment."""
     admin_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if admin_id != ADMIN_ID: return
+    if not is_primary_admin(admin_id): return
     if context.user_data.get("state") != 'awaiting_balance_adjustment_reason': return
     if not update.message or not update.message.text: return
 
@@ -763,7 +766,7 @@ async def handle_toggle_ban_user(update: Update, context: ContextTypes.DEFAULT_T
     """Bans or unbans a user."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
         await query.answer("Error: Missing user ID or offset.", show_alert=True); return
 
@@ -773,7 +776,7 @@ async def handle_toggle_ban_user(update: Update, context: ContextTypes.DEFAULT_T
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
     conn = None
 
-    if target_user_id == ADMIN_ID:
+    if is_primary_admin(target_user_id):
         cannot_ban_admin_msg = lang_data.get("ban_cannot_ban_admin", "❌ Cannot ban the primary admin.")
         await query.answer(cannot_ban_admin_msg, show_alert=True)
         return

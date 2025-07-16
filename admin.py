@@ -28,7 +28,7 @@ import telegram.error as telegram_error
 
 # --- Local Imports ---
 from utils import (
-    CITIES, DISTRICTS, PRODUCT_TYPES, ADMIN_ID, LANGUAGES, THEMES,
+    CITIES, DISTRICTS, PRODUCT_TYPES, ADMIN_ID, PRIMARY_ADMIN_IDS, LANGUAGES, THEMES,
     BOT_MEDIA, SIZES, fetch_reviews, format_currency, send_message_with_retry,
     get_date_range, TOKEN, load_all_data, format_discount_value,
     SECONDARY_ADMIN_IDS,
@@ -47,7 +47,9 @@ from utils import (
     _get_lang_data,  # <<<===== IMPORT THE HELPER =====>>>
     # <<< Admin Logging >>>
     log_admin_action, ACTION_RESELLER_DISCOUNT_DELETE, # Import logging helper and action constant
-    ACTION_PRODUCT_TYPE_REASSIGN # <<< ADDED for reassign type log
+    ACTION_PRODUCT_TYPE_REASSIGN, # <<< ADDED for reassign type log
+    # Admin authorization helpers
+    is_primary_admin, is_secondary_admin, is_any_admin, get_first_primary_admin_id
 )
 # --- Import viewer admin handlers ---
 # These now include the user management handlers
@@ -350,7 +352,7 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
     chat_id = update.effective_chat.id
     user_specific_data = context.user_data
 
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
 
     if user_specific_data.get("state") != "awaiting_drop_details":
         logger.debug(f"Ignoring drop details message from user {user_id}, state is not 'awaiting_drop_details' (state: {user_specific_data.get('state')})")
@@ -446,17 +448,17 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     user_id = user.id
     chat_id = update.effective_chat.id
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
+    primary_admin = is_primary_admin(user_id)
+    secondary_admin = is_secondary_admin(user_id)
 
-    if not is_primary_admin and not is_secondary_admin:
+    if not primary_admin and not secondary_admin:
         logger.warning(f"Non-admin user {user_id} attempted to access admin menu via {'command' if not query else 'callback'}.")
         msg = "Access denied."
         if query: await query.answer(msg, show_alert=True)
         else: await send_message_with_retry(context.bot, chat_id, msg, parse_mode=None)
         return
 
-    if is_secondary_admin and not is_primary_admin:
+    if secondary_admin and not primary_admin:
         logger.info(f"Redirecting secondary admin {user_id} to viewer admin menu.")
         try:
             return await handle_viewer_admin_menu(update, context)
@@ -548,7 +550,7 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 async def handle_sales_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays the sales analytics submenu."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     msg = "📊 Sales Analytics\n\nSelect a report or view:"
     keyboard = [
         [InlineKeyboardButton("📈 View Dashboard", callback_data="sales_dashboard")],
@@ -563,7 +565,7 @@ async def handle_sales_analytics_menu(update: Update, context: ContextTypes.DEFA
 async def handle_sales_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays a quick sales dashboard for today, this week, this month."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     periods = {
         "today": ("☀️ Today ({})", datetime.now(timezone.utc).strftime("%Y-%m-%d")), # Use UTC
         "week": ("🗓️ This Week (Mon-Sun)", None),
@@ -610,7 +612,7 @@ async def handle_sales_dashboard(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_sales_select_period(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options for selecting a reporting period."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params:
         logger.warning("handle_sales_select_period called without report_type.")
         return await query.answer("Error: Report type missing.", show_alert=True)
@@ -631,7 +633,7 @@ async def handle_sales_select_period(update: Update, context: ContextTypes.DEFAU
 async def handle_sales_run(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Generates and displays the selected sales report."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2:
         logger.warning("handle_sales_run called with insufficient parameters.")
         return await query.answer("Error: Report type or period missing.", show_alert=True)
@@ -715,7 +717,7 @@ async def handle_sales_run(update: Update, context: ContextTypes.DEFAULT_TYPE, p
 async def handle_adm_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects city to add product to."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context) # Use helper
     if not CITIES:
         return await query.edit_message_text("No cities configured. Please add a city first via 'Manage Cities'.", parse_mode=None)
@@ -728,7 +730,7 @@ async def handle_adm_city(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def handle_adm_dist(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects district within the chosen city."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -755,7 +757,7 @@ async def handle_adm_dist(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def handle_adm_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects product type."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2: return await query.answer("Error: City or District ID missing.", show_alert=True)
     city_id, dist_id = params[0], params[1]
     city_name = CITIES.get(city_id)
@@ -778,7 +780,7 @@ async def handle_adm_type(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def handle_adm_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects size for the new product."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 3: return await query.answer("Error: Location/Type info missing.", show_alert=True)
     city_id, dist_id, p_type = params
     city_name = CITIES.get(city_id)
@@ -799,7 +801,7 @@ async def handle_adm_add(update: Update, context: ContextTypes.DEFAULT_TYPE, par
 async def handle_adm_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles selection of a predefined size."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Size missing.", show_alert=True)
     size = params[0]
     if not all(k in context.user_data for k in ["admin_city", "admin_district", "admin_product_type"]):
@@ -814,7 +816,7 @@ async def handle_adm_size(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def handle_adm_custom_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Custom Size' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not all(k in context.user_data for k in ["admin_city", "admin_district", "admin_product_type"]):
         return await query.edit_message_text("❌ Error: Context lost. Please start adding the product again.", parse_mode=None)
     context.user_data["state"] = "awaiting_custom_size"
@@ -827,7 +829,7 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
     """Handles confirmation (Yes/No) for adding the drop."""
     query = update.callback_query
     user_id = query.from_user.id
-    if user_id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(user_id): return await query.answer("Access denied.", show_alert=True)
     chat_id = query.message.chat_id
     user_specific_data = context.user_data # Use context.user_data for the admin's data
     pending_drop = user_specific_data.get("pending_drop")
@@ -936,7 +938,7 @@ async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=
 async def handle_adm_bulk_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects city to add bulk products to."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context) # Use helper
     if not CITIES:
         return await query.edit_message_text("No cities configured. Please add a city first via 'Manage Cities'.", parse_mode=None)
@@ -949,7 +951,7 @@ async def handle_adm_bulk_city(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_adm_bulk_dist(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects district for bulk products."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -976,7 +978,7 @@ async def handle_adm_bulk_dist(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_adm_bulk_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects product type for bulk products."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2: return await query.answer("Error: City or District ID missing.", show_alert=True)
     city_id, dist_id = params[0], params[1]
     city_name = CITIES.get(city_id)
@@ -998,7 +1000,7 @@ async def handle_adm_bulk_type(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_adm_bulk_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects size for the bulk products."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 3: return await query.answer("Error: Location/Type info missing.", show_alert=True)
     city_id, dist_id, p_type = params
     city_name = CITIES.get(city_id)
@@ -1022,7 +1024,7 @@ async def handle_adm_bulk_add(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_adm_bulk_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles selection of a predefined size for bulk products."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Size missing.", show_alert=True)
     size = params[0]
     if not all(k in context.user_data for k in ["bulk_admin_city", "bulk_admin_district", "bulk_admin_product_type"]):
@@ -1037,7 +1039,7 @@ async def handle_adm_bulk_size(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_adm_bulk_custom_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Custom Size' button press for bulk products."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not all(k in context.user_data for k in ["bulk_admin_city", "bulk_admin_district", "bulk_admin_product_type"]):
         return await query.edit_message_text("❌ Error: Context lost. Please start adding the bulk products again.", parse_mode=None)
     context.user_data["state"] = "awaiting_bulk_custom_size"
@@ -1050,7 +1052,7 @@ async def handle_adm_bulk_custom_size_message(update: Update, context: ContextTy
     """Handles the custom size reply for bulk products."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_bulk_custom_size": return
 
@@ -1068,7 +1070,7 @@ async def handle_adm_bulk_price_message(update: Update, context: ContextTypes.DE
     """Handles the price reply for bulk products."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_bulk_price": return
 
@@ -1114,7 +1116,7 @@ async def handle_adm_bulk_drop_details_message(update: Update, context: ContextT
     """Handles collecting multiple different messages for bulk products."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message: return
     if context.user_data.get("state") != "awaiting_bulk_messages": return
 
@@ -1289,7 +1291,7 @@ async def show_bulk_messages_status(update: Update, context: ContextTypes.DEFAUL
 async def handle_adm_bulk_remove_last_message(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Removes the last collected message from bulk operation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     bulk_messages = context.user_data.get("bulk_messages", [])
     if not bulk_messages:
@@ -1311,7 +1313,7 @@ async def handle_adm_bulk_remove_last_message(update: Update, context: ContextTy
 async def handle_adm_bulk_back_to_management(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Returns to bulk management interface."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     # This function is no longer needed since we switched to message-based bulk instead of location-based
     # Redirect to the message collection status
@@ -1321,7 +1323,7 @@ async def handle_adm_bulk_back_to_management(update: Update, context: ContextTyp
 async def handle_adm_bulk_confirm_all(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirms and creates all products from the collected messages."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     bulk_messages = context.user_data.get("bulk_messages", [])
     if not bulk_messages:
@@ -1372,7 +1374,7 @@ async def handle_adm_bulk_confirm_all(update: Update, context: ContextTypes.DEFA
 async def handle_adm_bulk_execute(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Executes the bulk product creation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     chat_id = query.message.chat_id
     bulk_template = context.user_data.get("bulk_template", {})
@@ -1570,7 +1572,7 @@ async def cancel_bulk_add(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def handle_adm_manage_cities(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options to manage existing cities."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not CITIES:
          return await query.edit_message_text("No cities configured. Use 'Add New City'.", parse_mode=None,
                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ Add New City", callback_data="adm_add_city")],
@@ -1591,7 +1593,7 @@ async def handle_adm_manage_cities(update: Update, context: ContextTypes.DEFAULT
 async def handle_adm_add_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Add New City' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     context.user_data["state"] = "awaiting_new_city_name"
     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="adm_manage_cities")]]
     await query.edit_message_text("🏙️ Please reply with the name for the new city:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -1600,7 +1602,7 @@ async def handle_adm_add_city(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_adm_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Edit City' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -1616,7 +1618,7 @@ async def handle_adm_edit_city(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_adm_delete_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Delete City' button press, shows confirmation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -1633,7 +1635,7 @@ async def handle_adm_delete_city(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_adm_manage_districts(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows list of cities to choose from for managing districts."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not CITIES:
          return await query.edit_message_text("No cities configured. Add a city first.", parse_mode=None,
                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]]))
@@ -1646,7 +1648,7 @@ async def handle_adm_manage_districts(update: Update, context: ContextTypes.DEFA
 async def handle_adm_manage_districts_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows districts for the selected city and management options."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -1692,7 +1694,7 @@ async def handle_adm_manage_districts_city(update: Update, context: ContextTypes
 async def handle_adm_add_district(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Add New District' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -1708,7 +1710,7 @@ async def handle_adm_add_district(update: Update, context: ContextTypes.DEFAULT_
 async def handle_adm_edit_district(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Edit District' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2: return await query.answer("Error: City/District ID missing.", show_alert=True)
     city_id, dist_id = params
     city_name = CITIES.get(city_id)
@@ -1736,7 +1738,7 @@ async def handle_adm_edit_district(update: Update, context: ContextTypes.DEFAULT
 async def handle_adm_remove_district(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Delete District' button press, shows confirmation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2: return await query.answer("Error: City/District ID missing.", show_alert=True)
     city_id, dist_id = params
     city_name = CITIES.get(city_id)
@@ -1766,7 +1768,7 @@ async def handle_adm_remove_district(update: Update, context: ContextTypes.DEFAU
 async def handle_adm_manage_products(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects city to manage products in."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not CITIES:
          return await query.edit_message_text("No cities configured. Add a city first.", parse_mode=None,
                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]]))
@@ -1780,7 +1782,7 @@ async def handle_adm_manage_products(update: Update, context: ContextTypes.DEFAU
 async def handle_adm_manage_products_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects district to manage products in."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: City ID missing.", show_alert=True)
     city_id = params[0]
     city_name = CITIES.get(city_id)
@@ -1806,7 +1808,7 @@ async def handle_adm_manage_products_city(update: Update, context: ContextTypes.
 async def handle_adm_manage_products_dist(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects product type to manage within the district."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 2: return await query.answer("Error: City/District ID missing.", show_alert=True)
     city_id, dist_id = params
     city_name = CITIES.get(city_id)
@@ -1842,7 +1844,7 @@ async def handle_adm_manage_products_dist(update: Update, context: ContextTypes.
 async def handle_adm_manage_products_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows specific products of a type and allows deletion."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 3: return await query.answer("Error: Location/Type info missing.", show_alert=True)
     city_id, dist_id, p_type = params
     city_name = CITIES.get(city_id)
@@ -1896,7 +1898,7 @@ async def handle_adm_manage_products_type(update: Update, context: ContextTypes.
 async def handle_adm_delete_prod(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Delete Product' button press, shows confirmation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Product ID missing.", show_alert=True)
     try: product_id = int(params[0])
     except ValueError: return await query.answer("Error: Invalid Product ID.", show_alert=True)
@@ -1942,7 +1944,7 @@ async def handle_adm_delete_prod(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_adm_reassign_type_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows interface for reassigning products from one type to another."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     load_all_data()
@@ -1987,7 +1989,7 @@ async def handle_adm_reassign_type_start(update: Update, context: ContextTypes.D
 async def handle_adm_reassign_select_old(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles selection of the old product type to reassign from."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params:
@@ -2023,7 +2025,7 @@ async def handle_adm_reassign_select_old(update: Update, context: ContextTypes.D
 async def handle_adm_reassign_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows confirmation for the product type reassignment."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or len(params) < 2:
@@ -2100,7 +2102,7 @@ async def handle_adm_reassign_confirm(update: Update, context: ContextTypes.DEFA
 async def handle_adm_manage_types(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options to manage product types (edit emoji, delete)."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     load_all_data() # Ensure PRODUCT_TYPES is up-to-date
     if not PRODUCT_TYPES: msg = "🧩 Manage Product Types\n\nNo product types configured."
     else: msg = "🧩 Manage Product Types\n\nSelect a type to edit or delete:"
@@ -2121,7 +2123,7 @@ async def handle_adm_edit_type_menu(update: Update, context: ContextTypes.DEFAUL
     """Shows options for a specific product type: change emoji, edit description, or delete."""
     query = update.callback_query
     lang, lang_data = _get_lang_data(context) # Use helper
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Type name missing.", show_alert=True)
 
     type_name = params[0]
@@ -2173,7 +2175,7 @@ async def handle_adm_change_type_emoji(update: Update, context: ContextTypes.DEF
     """Handles 'Change Emoji' button press."""
     query = update.callback_query
     lang, lang_data = _get_lang_data(context) # Use helper
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Type name missing.", show_alert=True)
     type_name = params[0]
 
@@ -2190,7 +2192,7 @@ async def handle_adm_change_type_emoji(update: Update, context: ContextTypes.DEF
 async def handle_adm_add_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Add New Type' button press - asks for name first."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     context.user_data["state"] = "awaiting_new_type_name"
     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="adm_manage_types")]]
     await query.edit_message_text("🧩 Please reply with the name for the new product type:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -2199,7 +2201,7 @@ async def handle_adm_add_type(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_adm_delete_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Delete Type' button, checks usage, shows confirmation or force delete option."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Type name missing.", show_alert=True)
     type_name_to_delete = params[0] # Use a distinct variable name
     conn = None
@@ -2249,7 +2251,7 @@ async def handle_adm_delete_type(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_confirm_force_delete_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows a final, more severe confirmation for force deleting a product type and its associated items."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     # Retrieve the type name from user_data
     type_name = context.user_data.get('force_delete_type_name')
@@ -2303,7 +2305,7 @@ async def handle_confirm_force_delete_prompt(update: Update, context: ContextTyp
 async def handle_adm_manage_discounts(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays existing discount codes and management options."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     conn = None # Initialize conn
     try:
         conn = get_db_connection() # Use helper
@@ -2370,7 +2372,7 @@ async def handle_adm_manage_discounts(update: Update, context: ContextTypes.DEFA
 async def handle_adm_toggle_discount(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Activates or deactivates a specific discount code."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Code ID missing.", show_alert=True)
     conn = None # Initialize conn
     try:
@@ -2398,7 +2400,7 @@ async def handle_adm_toggle_discount(update: Update, context: ContextTypes.DEFAU
 async def handle_adm_delete_discount(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles delete button press for discount code, shows confirmation."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Code ID missing.", show_alert=True)
     conn = None # Initialize conn
     try:
@@ -2430,7 +2432,7 @@ async def handle_adm_delete_discount(update: Update, context: ContextTypes.DEFAU
 async def handle_adm_add_discount_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Starts the process of adding a new discount code."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     context.user_data['state'] = 'awaiting_discount_code'
     context.user_data['new_discount_info'] = {} # Initialize dict
     random_code = secrets.token_urlsafe(8).upper().replace('-', '').replace('_', '')[:8]
@@ -2450,7 +2452,7 @@ async def handle_adm_add_discount_start(update: Update, context: ContextTypes.DE
 async def handle_adm_use_generated_code(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles using the suggested random code."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Generated code missing.", show_alert=True)
     code_text = params[0]
     await process_discount_code_input(update, context, code_text) # This function will handle message editing
@@ -2462,7 +2464,7 @@ async def process_discount_code_input(update, context, code_text):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
-    if user_id != ADMIN_ID:
+    if not is_primary_admin(user_id):
         if query:
             await query.answer("Access Denied.", show_alert=True)
         return
@@ -2528,7 +2530,7 @@ async def handle_adm_discount_code_message(update: Update, context: ContextTypes
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    if user_id != ADMIN_ID:
+    if not is_primary_admin(user_id):
         return
         
     if context.user_data.get("state") != 'awaiting_discount_code':
@@ -2549,7 +2551,7 @@ async def handle_adm_discount_value_message(update: Update, context: ContextType
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    if user_id != ADMIN_ID:
+    if not is_primary_admin(user_id):
         return
         
     if context.user_data.get("state") != 'awaiting_discount_value':
@@ -2632,7 +2634,7 @@ async def handle_adm_discount_value_message(update: Update, context: ContextType
 async def handle_adm_set_discount_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Sets the discount type and asks for the value."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Discount type missing.", show_alert=True)
     current_state = context.user_data.get("state")
     if current_state not in ['awaiting_discount_type', 'awaiting_discount_code']: # Check if state is valid
@@ -2667,7 +2669,7 @@ async def handle_adm_set_discount_type(update: Update, context: ContextTypes.DEF
 async def handle_adm_set_media(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Set Bot Media' button press."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context) # Use helper
     set_media_prompt_text = lang_data.get("set_media_prompt_plain", "Send a photo, video, or GIF to display above all messages:")
     context.user_data["state"] = "awaiting_bot_media"
@@ -2681,9 +2683,9 @@ async def handle_adm_manage_reviews(update: Update, context: ContextTypes.DEFAUL
     """Displays reviews paginated for the admin with delete options."""
     query = update.callback_query
     user_id = query.from_user.id
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
-    if not is_primary_admin and not is_secondary_admin: return await query.answer("Access Denied.", show_alert=True)
+    primary_admin = is_primary_admin(user_id)
+    secondary_admin = is_secondary_admin(user_id)
+    if not primary_admin and not secondary_admin: return await query.answer("Access Denied.", show_alert=True)
     offset = 0
     if params and len(params) > 0 and params[0].isdigit(): offset = int(params[0])
     reviews_per_page = 5
@@ -2710,18 +2712,18 @@ async def handle_adm_manage_reviews(update: Update, context: ContextTypes.DEFAUL
                 review_text = review.get('review_text', '')
                 review_text_preview = review_text[:100] + ('...' if len(review_text) > 100 else '')
                 msg += f"ID {review_id} | {username_display} ({formatted_date}):\n{review_text_preview}\n\n"
-                if is_primary_admin: # Only primary admin can delete
+                if primary_admin: # Only primary admin can delete
                      item_buttons.append([InlineKeyboardButton(f"🗑️ Delete Review #{review_id}", callback_data=f"adm_delete_review_confirm|{review_id}")])
             except Exception as e:
                  logger.error(f"Error formatting review item #{review_id} for admin view: {review}, Error: {e}")
                  msg += f"ID {review_id} | (Error displaying review)\n\n"
-                 if is_primary_admin: item_buttons.append([InlineKeyboardButton(f"🗑️ Delete Review #{review_id}", callback_data=f"adm_delete_review_confirm|{review_id}")])
+                 if primary_admin: item_buttons.append([InlineKeyboardButton(f"🗑️ Delete Review #{review_id}", callback_data=f"adm_delete_review_confirm|{review_id}")])
         keyboard.extend(item_buttons)
         nav_buttons = []
         if offset > 0: nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"adm_manage_reviews|{max(0, offset - reviews_per_page)}"))
         if has_more: nav_buttons.append(InlineKeyboardButton("➡️ Next", callback_data=f"adm_manage_reviews|{offset + reviews_per_page}"))
         if nav_buttons: keyboard.append(nav_buttons)
-    back_callback = "admin_menu" if is_primary_admin else "viewer_admin_menu"
+    back_callback = "admin_menu" if primary_admin else "viewer_admin_menu"
     keyboard.append([InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data=back_callback)])
     try:
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -2739,7 +2741,7 @@ async def handle_adm_delete_review_confirm(update: Update, context: ContextTypes
     """Handles 'Delete Review' button press, shows confirmation."""
     query = update.callback_query
     user_id = query.from_user.id
-    if user_id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(user_id): return await query.answer("Access denied.", show_alert=True)
     if not params: return await query.answer("Error: Review ID missing.", show_alert=True)
     try: review_id = int(params[0])
     except ValueError: return await query.answer("Error: Invalid Review ID.", show_alert=True)
@@ -2774,7 +2776,7 @@ async def handle_adm_delete_review_confirm(update: Update, context: ContextTypes
 async def handle_adm_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Starts the broadcast message process by asking for the target audience."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     lang, lang_data = _get_lang_data(context) # Use helper
 
@@ -2798,7 +2800,7 @@ async def handle_adm_broadcast_start(update: Update, context: ContextTypes.DEFAU
 async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles the selection of the broadcast target type."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Target type missing.", show_alert=True)
 
     target_type = params[0]
@@ -2853,7 +2855,7 @@ async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes
 async def handle_adm_broadcast_target_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles selecting the city for targeted broadcast."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: City name missing.", show_alert=True)
 
     city_name = params[0]
@@ -2869,7 +2871,7 @@ async def handle_adm_broadcast_target_city(update: Update, context: ContextTypes
 async def handle_adm_broadcast_target_status(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles selecting the status for targeted broadcast."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Status value missing.", show_alert=True)
 
     status_value = params[0]
@@ -2886,7 +2888,7 @@ async def handle_adm_broadcast_target_status(update: Update, context: ContextTyp
 async def handle_confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles the 'Yes' confirmation for the broadcast."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     broadcast_content = context.user_data.get('broadcast_content')
     if not broadcast_content:
@@ -2914,7 +2916,7 @@ async def handle_confirm_broadcast(update: Update, context: ContextTypes.DEFAULT
 async def handle_cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Cancels the broadcast process."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     context.user_data.pop('state', None)
     context.user_data.pop('broadcast_content', None)
@@ -2931,7 +2933,7 @@ async def handle_cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_
 # --- Handler for Broadcast Message Content ---
 async def handle_adm_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin sending broadcast message content."""
-    if update.effective_user.id != ADMIN_ID:
+    if not is_primary_admin(update.effective_user.id):
         await update.message.reply_text("Access Denied.", parse_mode=None)
         return
 
@@ -2999,7 +3001,7 @@ async def handle_adm_broadcast_message(update: Update, context: ContextTypes.DEF
 # --- Handler for Inactive Days Input ---
 async def handle_adm_broadcast_inactive_days_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin entering inactive days for broadcast targeting."""
-    if update.effective_user.id != ADMIN_ID:
+    if not is_primary_admin(update.effective_user.id):
         await update.message.reply_text("Access Denied.", parse_mode=None)
         return
     
@@ -3113,7 +3115,7 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, media_fi
 async def handle_adm_clear_reservations_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows confirmation prompt for clearing all reservations."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     context.user_data["confirm_action"] = "clear_all_reservations"
     msg = (f"⚠️ Confirm Action: Clear All Reservations\n\n"
@@ -3128,8 +3130,8 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Handles generic 'Yes' confirmation based on stored action in user_data."""
     query = update.callback_query
     user_id = query.from_user.id
-    is_primary_admin = (user_id == ADMIN_ID)
-    if not is_primary_admin:
+    primary_admin = is_primary_admin(user_id)
+    if not primary_admin:
         logger.warning(f"Non-primary admin {user_id} tried to confirm a destructive action.")
         await query.answer("Permission denied for this action.", show_alert=True)
         return
@@ -3424,7 +3426,7 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def handle_adm_edit_welcome_text(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Initiates editing the template text."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Template name missing.", show_alert=True)
 
     template_name = params[0]
@@ -3470,7 +3472,7 @@ async def handle_adm_edit_welcome_text(update: Update, context: ContextTypes.DEF
 async def handle_adm_edit_welcome_desc(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Initiates editing the template description."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Template name missing.", show_alert=True)
 
     template_name = params[0]
@@ -3502,7 +3504,7 @@ async def handle_adm_edit_welcome_desc(update: Update, context: ContextTypes.DEF
 async def handle_adm_delete_welcome_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirms deletion of a welcome message template."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[1].isdigit():
          return await query.answer("Error: Template name or offset missing.", show_alert=True)
 
@@ -3547,7 +3549,7 @@ async def handle_adm_delete_welcome_confirm(update: Update, context: ContextType
 async def handle_reset_default_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirms resetting the 'default' template to the built-in text and activating it."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context)
 
     context.user_data["confirm_action"] = "reset_default_welcome"
@@ -3571,7 +3573,7 @@ async def handle_adm_welcome_template_name_message(update: Update, context: Cont
     """Handles text reply when state is 'awaiting_welcome_template_name'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_welcome_template_name": return
     
@@ -3620,7 +3622,7 @@ async def handle_adm_welcome_template_text_message(update: Update, context: Cont
     """Handles text reply when state is 'awaiting_welcome_template_text' or 'awaiting_welcome_template_edit'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     
     state = context.user_data.get("state")
@@ -3689,7 +3691,7 @@ async def handle_adm_welcome_description_message(update: Update, context: Contex
     """Handles text reply when state is 'awaiting_welcome_description' or 'awaiting_welcome_description_edit'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     
     state = context.user_data.get("state")
@@ -3858,7 +3860,7 @@ async def handle_confirm_save_welcome(update: Update, context: ContextTypes.DEFA
     """Handles the 'Save Template' button after preview."""
     query = update.callback_query
     user_id = query.from_user.id
-    if user_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(user_id): return await query.answer("Access Denied.", show_alert=True)
     if context.user_data.get("state") != 'awaiting_welcome_confirmation':
         logger.warning("handle_confirm_save_welcome called in wrong state.")
         return await query.answer("Invalid state.", show_alert=True)
@@ -3911,7 +3913,7 @@ async def handle_adm_add_city_message(update: Update, context: ContextTypes.DEFA
     """Handles text reply when state is 'awaiting_new_city_name'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_new_city_name": return
     text = update.message.text.strip()
@@ -3942,7 +3944,7 @@ async def handle_adm_add_district_message(update: Update, context: ContextTypes.
     """Handles text reply when state is 'awaiting_new_district_name'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_new_district_name": return
     text = update.message.text.strip()
@@ -3979,7 +3981,7 @@ async def handle_adm_edit_district_message(update: Update, context: ContextTypes
     """Handles text reply when state is 'awaiting_edit_district_name'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_edit_district_name": return
     new_name = update.message.text.strip()
@@ -4037,7 +4039,7 @@ async def handle_adm_edit_city_message(update: Update, context: ContextTypes.DEF
     """Handles text reply when state is 'awaiting_edit_city_name'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_edit_city_name": return
     new_name = update.message.text.strip()
@@ -4093,7 +4095,7 @@ async def handle_adm_custom_size_message(update: Update, context: ContextTypes.D
     """Handles text reply when state is 'awaiting_custom_size'."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_custom_size": return
     custom_size = update.message.text.strip()
@@ -4113,7 +4115,7 @@ async def handle_adm_price_message(update: Update, context: ContextTypes.DEFAULT
     """Handles price input for regular product adding."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
+    if not is_primary_admin(user_id): return
     if not update.message or not update.message.text: return
     if context.user_data.get("state") != "awaiting_price": return
     
@@ -4256,7 +4258,7 @@ async def display_user_search_results(bot, chat_id: int, user_info: dict):
 async def handle_adm_bulk_back_to_messages(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Returns to the message collection interface."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     context.user_data["state"] = "awaiting_bulk_messages"
     await show_bulk_messages_status(update, context)
@@ -4264,7 +4266,7 @@ async def handle_adm_bulk_back_to_messages(update: Update, context: ContextTypes
 async def handle_adm_bulk_execute_messages(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Executes the bulk product creation from collected messages."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access denied.", show_alert=True)
     
     chat_id = query.message.chat_id
     bulk_messages = context.user_data.get("bulk_messages", [])
@@ -4487,7 +4489,7 @@ async def handle_adm_bulk_execute_messages(update: Update, context: ContextTypes
 # Product type message handlers
 async def handle_adm_new_type_name_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles new product type name input."""
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_primary_admin(update.effective_user.id): return
     if not update.message or not update.message.text: return
     
     type_name = update.message.text.strip()
@@ -4515,7 +4517,7 @@ async def handle_adm_new_type_name_message(update: Update, context: ContextTypes
 
 async def handle_adm_new_type_emoji_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles new product type emoji input."""
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_primary_admin(update.effective_user.id): return
     if not update.message or not update.message.text: return
     
     emoji = update.message.text.strip()
@@ -4543,7 +4545,7 @@ async def handle_adm_new_type_emoji_message(update: Update, context: ContextType
 
 async def handle_adm_new_type_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles new product type description input and creates the type."""
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_primary_admin(update.effective_user.id): return
     if not update.message or not update.message.text: return
     
     description = update.message.text.strip()
@@ -4611,7 +4613,7 @@ async def handle_adm_new_type_description_message(update: Update, context: Conte
 
 async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles editing product type emoji input."""
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_primary_admin(update.effective_user.id): return
     if not update.message or not update.message.text: return
     
     emoji = update.message.text.strip()
@@ -4686,7 +4688,7 @@ async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTyp
 async def handle_adm_search_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Starts the user search process by prompting for username."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     context.user_data['state'] = 'awaiting_search_username'
@@ -4709,7 +4711,7 @@ async def handle_adm_search_username_message(update: Update, context: ContextTyp
     admin_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    if admin_id != ADMIN_ID: 
+    if not is_primary_admin(admin_id): 
         return
     if context.user_data.get("state") != 'awaiting_search_username': 
         return
@@ -4787,7 +4789,7 @@ async def handle_adm_search_username_message(update: Update, context: ContextTyp
 async def handle_adm_user_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows detailed pending deposits for a user."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or not params[0].isdigit():
@@ -4860,7 +4862,7 @@ async def handle_adm_user_deposits(update: Update, context: ContextTypes.DEFAULT
 async def handle_adm_user_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows paginated purchase history for a user."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
@@ -4954,7 +4956,7 @@ async def handle_adm_user_purchases(update: Update, context: ContextTypes.DEFAUL
 async def handle_adm_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows paginated admin actions for a user."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
@@ -5047,7 +5049,7 @@ async def handle_adm_user_actions(update: Update, context: ContextTypes.DEFAULT_
 async def handle_adm_user_discounts(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows reseller discounts for a user."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or not params[0].isdigit():
@@ -5110,7 +5112,7 @@ async def handle_adm_user_discounts(update: Update, context: ContextTypes.DEFAUL
 async def handle_adm_user_overview(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Returns to user overview from detailed sections."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or not params[0].isdigit():
@@ -5146,7 +5148,7 @@ async def handle_adm_user_overview(update: Update, context: ContextTypes.DEFAULT
 async def handle_adm_manage_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays the paginated menu for managing welcome message templates."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
+    if not is_primary_admin(query.from_user.id):
         return await query.answer("Access Denied.", show_alert=True)
 
     lang, lang_data = _get_lang_data(context) # Use helper
@@ -5235,7 +5237,7 @@ async def handle_adm_manage_welcome(update: Update, context: ContextTypes.DEFAUL
 async def handle_adm_activate_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Activates the selected welcome message template."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[1].isdigit():
         return await query.answer("Error: Template name or offset missing.", show_alert=True)
 
@@ -5255,7 +5257,7 @@ async def handle_adm_activate_welcome(update: Update, context: ContextTypes.DEFA
 async def handle_adm_add_welcome_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Starts the process of adding a new welcome template (gets name)."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context) # Use helper
 
     context.user_data['state'] = 'awaiting_welcome_template_name'
@@ -5267,7 +5269,7 @@ async def handle_adm_add_welcome_start(update: Update, context: ContextTypes.DEF
 async def handle_adm_edit_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options for editing an existing welcome template (text or description)."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[1].isdigit():
         return await query.answer("Error: Template name or offset missing.", show_alert=True)
 
@@ -5325,7 +5327,7 @@ async def handle_adm_edit_welcome(update: Update, context: ContextTypes.DEFAULT_
 async def handle_adm_edit_welcome_text(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Initiates editing the template text."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Template name missing.", show_alert=True)
 
     template_name = params[0]
@@ -5371,7 +5373,7 @@ async def handle_adm_edit_welcome_text(update: Update, context: ContextTypes.DEF
 async def handle_adm_edit_welcome_desc(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Initiates editing the template description."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Template name missing.", show_alert=True)
 
     template_name = params[0]
@@ -5403,7 +5405,7 @@ async def handle_adm_edit_welcome_desc(update: Update, context: ContextTypes.DEF
 async def handle_adm_delete_welcome_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirms deletion of a welcome message template."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[1].isdigit():
          return await query.answer("Error: Template name or offset missing.", show_alert=True)
 
@@ -5447,7 +5449,7 @@ async def handle_adm_delete_welcome_confirm(update: Update, context: ContextType
 async def handle_reset_default_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirms resetting the 'default' template to the built-in text and activating it."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context)
 
     context.user_data["confirm_action"] = "reset_default_welcome"
@@ -5465,7 +5467,7 @@ async def handle_confirm_save_welcome(update: Update, context: ContextTypes.DEFA
     """Handles the 'Save Template' button after preview."""
     query = update.callback_query
     user_id = query.from_user.id
-    if user_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(user_id): return await query.answer("Access Denied.", show_alert=True)
     if context.user_data.get("state") != 'awaiting_welcome_confirmation':
         logger.warning("handle_confirm_save_welcome called in wrong state.")
         return await query.answer("Invalid state.", show_alert=True)
@@ -5594,7 +5596,7 @@ TEMPLATES_PER_PAGE = 5
 async def handle_adm_debug_reseller_discount(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Debug reseller discount system for a specific user."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: 
+    if not is_primary_admin(query.from_user.id): 
         return await query.answer("Access denied.", show_alert=True)
     
     if not params or not params[0].isdigit():
@@ -5672,7 +5674,7 @@ async def handle_adm_debug_reseller_discount(update: Update, context: ContextTyp
 async def handle_adm_recent_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows real-time monitoring of recent purchases with detailed information."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
+    if not is_primary_admin(query.from_user.id):
         return await query.answer("Access denied.", show_alert=True)
     
     # Get pagination offset if provided

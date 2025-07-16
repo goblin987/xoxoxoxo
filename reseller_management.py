@@ -19,7 +19,9 @@ from utils import (
     # Import action constants for logging
     ACTION_RESELLER_ENABLED, ACTION_RESELLER_DISABLED,
     ACTION_RESELLER_DISCOUNT_ADD, ACTION_RESELLER_DISCOUNT_EDIT,
-    ACTION_RESELLER_DISCOUNT_DELETE
+    ACTION_RESELLER_DISCOUNT_DELETE,
+    # Admin helper functions
+    is_primary_admin, is_secondary_admin, is_any_admin
 )
 
 # Logging setup specific to this module
@@ -85,7 +87,7 @@ def get_reseller_discount(user_id: int, product_type: str) -> Decimal:
 async def handle_manage_resellers_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Prompts admin to enter the User ID to manage reseller status."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
 
     # Set state to expect a user ID message
     context.user_data['state'] = 'awaiting_reseller_manage_id'
@@ -102,7 +104,7 @@ async def handle_reseller_manage_id_message(update: Update, context: ContextType
     """Handles the admin entering a User ID for reseller status management."""
     admin_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if admin_id != ADMIN_ID: return
+    if not is_primary_admin(admin_id): return
     if context.user_data.get("state") != 'awaiting_reseller_manage_id': return
     if not update.message or not update.message.text: return
 
@@ -172,7 +174,7 @@ async def handle_reseller_toggle_status(update: Update, context: ContextTypes.DE
     admin_id = query.from_user.id
     chat_id = query.message.chat_id # Get chat_id for sending messages
 
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     # Params now only need target user ID, offset is irrelevant here
     if not params or not params[0].isdigit():
         await query.answer("Error: Invalid data.", show_alert=True); return
@@ -236,7 +238,7 @@ async def handle_reseller_toggle_status(update: Update, context: ContextTypes.DE
 async def handle_manage_reseller_discounts_select_reseller(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Admin selects which active reseller to manage discounts for (PAGINATED)."""
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(query.from_user.id): return await query.answer("Access Denied.", show_alert=True)
     offset = 0
     if params and len(params) > 0 and params[0].isdigit(): offset = int(params[0])
 
@@ -299,7 +301,7 @@ async def handle_manage_specific_reseller_discounts(update: Update, context: Con
     """Displays current discounts for a specific reseller and allows adding/editing."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or not params[0].isdigit():
         await query.answer("Error: Invalid user ID.", show_alert=True); return
 
@@ -360,7 +362,7 @@ async def handle_reseller_add_discount_select_type(update: Update, context: Cont
     """Admin selects product type for a new reseller discount rule."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or not params[0].isdigit():
         await query.answer("Error: Invalid user ID.", show_alert=True); return
 
@@ -394,7 +396,7 @@ async def handle_reseller_add_discount_enter_percent(update: Update, context: Co
     """Admin needs to enter the percentage for the new rule."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
 
     # <<< RETRIEVE target ID from context >>>
     target_reseller_id = context.user_data.get('reseller_mgmt_target_id')
@@ -427,7 +429,7 @@ async def handle_reseller_edit_discount(update: Update, context: ContextTypes.DE
     """Admin wants to edit an existing discount percentage."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[0].isdigit():
         await query.answer("Error: Invalid data.", show_alert=True); return
 
@@ -455,7 +457,7 @@ async def handle_reseller_percent_message(update: Update, context: ContextTypes.
     """Handles the admin entering the discount percentage via message."""
     admin_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if admin_id != ADMIN_ID: return
+    if not is_primary_admin(admin_id): return
     if context.user_data.get("state") != 'awaiting_reseller_discount_percent': return
     if not update.message or not update.message.text: return
 
@@ -544,7 +546,7 @@ async def handle_reseller_delete_discount_confirm(update: Update, context: Conte
     """Handles 'Delete Discount' button press, shows confirmation."""
     query = update.callback_query
     admin_id = query.from_user.id
-    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not is_primary_admin(admin_id): return await query.answer("Access Denied.", show_alert=True)
     if not params or len(params) < 2 or not params[0].isdigit():
         await query.answer("Error: Invalid data.", show_alert=True); return
 

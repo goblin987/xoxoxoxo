@@ -14,7 +14,8 @@ import telegram.error as telegram_error # Use telegram.error
 # Import necessary items from utils
 from utils import (
     ADMIN_ID, format_currency, send_message_with_retry, SECONDARY_ADMIN_IDS,
-    get_db_connection # Import DB helper
+    get_db_connection, # Import DB helper
+    is_primary_admin, is_secondary_admin, is_any_admin # Admin helper functions
 )
 
 # Setup logger for this file
@@ -27,10 +28,10 @@ async def handle_view_stock(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_id = query.from_user.id
 
     # --- Authorization Check ---
-    is_primary_admin = (user_id == ADMIN_ID)
-    is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
+    primary_admin = is_primary_admin(user_id)
+    secondary_admin = is_secondary_admin(user_id)
 
-    if not is_primary_admin and not is_secondary_admin:
+    if not primary_admin and not secondary_admin:
         await query.answer("Access Denied.", show_alert=True)
         return
     # --- END Check ---
@@ -56,7 +57,7 @@ async def handle_view_stock(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         if not products:
             msg = "📦 Bot Stock\n\nNo products currently in stock (neither available nor reserved)." # Clarified message
-            back_callback = "admin_menu" if is_primary_admin else "viewer_admin_menu"
+            back_callback = "admin_menu" if primary_admin else "viewer_admin_menu"
             keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data=back_callback)]]
         else:
             msg = "📦 Current Bot Stock\n\n"
@@ -88,7 +89,7 @@ async def handle_view_stock(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 msg = msg[:4000] + "\n\n✂️ ... Message truncated due to length limit."
                 logger.warning("Stock list message truncated due to length.")
 
-            back_callback = "admin_menu" if is_primary_admin else "viewer_admin_menu"
+            back_callback = "admin_menu" if primary_admin else "viewer_admin_menu"
             keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data=back_callback)]]
 
         # Try sending/editing the message
